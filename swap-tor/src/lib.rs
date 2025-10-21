@@ -159,9 +159,7 @@ impl Transport for Socks5Transport {
 
         Ok(Box::pin(async move {
             Ok(tokio_util::compat::TokioAsyncReadCompatExt::compat(
-                Socks5Stream::connect_with_socket(proxy.connect().await?, target)
-                    .await?
-                    .into_inner(),
+                proxy.proxy(target).await?,
             ))
         }))
     }
@@ -208,6 +206,15 @@ impl SocksServerAddress {
         }
     }
 
+    pub async fn proxy(
+        &self,
+        target: TargetAddr<'_>,
+    ) -> Result<TcpOrUnixStream, tokio_socks::Error> {
+        Socks5Stream::connect_with_socket(self.connect().await?, target)
+            .await
+            .map(Socks5Stream::into_inner)
+    }
+
     /// Consult `$TOR_SOCKS_{IPC_PATH,HOST+PORT}`
     ///
     /// `$TOR_SOCKS_IPC_PATH` is ignored if `cfg(not(unix))`, and takes precedence if `cfg(unix)`.
@@ -233,4 +240,14 @@ pub enum TorBackend {
     Arti(Arc<TorClient<TokioRustlsRuntime>>),
     Socks(Arc<SocksServerAddress>),
     None,
+}
+
+impl std::fmt::Debug for TorBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        f.write_str(match self {
+            TorBackend::Arti(..) => "Arti",
+            TorBackend::Socks(..) => "Socks",
+            TorBackend::None => "None",
+        })
+    }
 }

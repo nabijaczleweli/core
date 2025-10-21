@@ -1,4 +1,4 @@
-use crate::common::tor::TorBackend;
+use crate::common::tor::{TorBackend, TorBackendSwap};
 use crate::network::rendezvous::XmrBtcNamespace;
 use crate::network::swap_setup::alice;
 use crate::network::transport::authenticate_and_multiplex;
@@ -18,10 +18,7 @@ use swap_feed::LatestRate;
 
 pub mod transport {
     use arti_client::config::onion_service::OnionServiceConfigBuilder;
-    use libp2p::{
-        core::transport::{OptionalTransport, OrTransport},
-        dns, identity, tcp, Transport,
-    };
+    use libp2p::{dns, identity, tcp, Transport};
     use libp2p_tor::AddressConversion;
 
     use super::*;
@@ -48,15 +45,8 @@ pub mod transport {
         num_intro_points: u8,
     ) -> Result<OnionTransportWithAddresses> {
         let mut onion_addresses = vec![];
-        let maybe_tor_transport = match maybe_tor_client {
-            TorBackend::Socks(universal_config) => OrTransport::new(
-                OptionalTransport::none(),
-                OptionalTransport::some(universal_config.transport()),
-            ),
-            TorBackend::Arti(tor_client) => {
-                let mut tor_transport =
-                    libp2p_tor::TorTransport::from_client(tor_client, AddressConversion::DnsOnly);
-
+        let maybe_tor_transport =
+            maybe_tor_client.into_transport(AddressConversion::DnsOnly, |arti_tor_transport| {
                 if register_hidden_service {
                     let onion_service_config = OnionServiceConfigBuilder::default()
                         .nickname(
@@ -68,7 +58,7 @@ pub mod transport {
                         .build()
                         .expect("We specified a valid nickname");
 
-                    match tor_transport
+                    match arti_tor_transport
                         .add_onion_service(onion_service_config, ASB_ONION_SERVICE_PORT)
                     {
                         Ok(addr) => {
@@ -83,16 +73,7 @@ pub mod transport {
                         }
                     }
                 }
-
-                OrTransport::new(
-                    OptionalTransport::some(tor_transport),
-                    OptionalTransport::none(),
-                )
-            }
-            TorBackend::None => {
-                OrTransport::new(OptionalTransport::none(), OptionalTransport::none())
-            }
-        };
+            });
 
         let tcp = maybe_tor_transport
             .or_transport(tcp::tokio::Transport::new(tcp::Config::new().nodelay(true)));

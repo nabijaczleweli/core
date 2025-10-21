@@ -1,8 +1,8 @@
-use crate::common::tor::TorBackend;
+use crate::common::tor::{TorBackend, TorBackendSwap};
 use crate::network::transport::authenticate_and_multiplex;
 use anyhow::Result;
 use libp2p::core::muxing::StreamMuxerBox;
-use libp2p::core::transport::{Boxed, OptionalTransport, OrTransport};
+use libp2p::core::transport::Boxed;
 use libp2p::dns;
 use libp2p::tcp;
 use libp2p::{identity, PeerId, Transport};
@@ -23,20 +23,7 @@ pub fn new(
     let tcp = tcp::tokio::Transport::new(tcp::Config::new().nodelay(true));
     let tcp_with_dns = dns::tokio::Transport::system(tcp)?;
 
-    let maybe_tor_transport = match maybe_tor_client {
-        TorBackend::Socks(universal_config) => OrTransport::new(
-            OptionalTransport::none(),
-            OptionalTransport::some(universal_config.transport()),
-        ),
-        TorBackend::Arti(client) => OrTransport::new(
-            OptionalTransport::some(libp2p_tor::TorTransport::from_client(
-                client,
-                AddressConversion::IpAndDns,
-            )),
-            OptionalTransport::none(),
-        ),
-        TorBackend::None => OrTransport::new(OptionalTransport::none(), OptionalTransport::none()),
-    };
+    let maybe_tor_transport = maybe_tor_client.into_transport(AddressConversion::IpAndDns, |_| {});
 
     let transport = maybe_tor_transport.or_transport(tcp_with_dns).boxed();
 

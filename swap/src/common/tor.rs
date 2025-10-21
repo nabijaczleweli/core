@@ -5,7 +5,7 @@ use crate::cli::api::tauri_bindings::{
 };
 use arti_client::{config::TorClientConfigBuilder, status::BootstrapStatus, Error, TorClient};
 use futures::StreamExt;
-use swap_env::env::is_whonix;
+use swap_env::env::{is_whonix, may_init_tor};
 use tor_rtcompat::tokio::TokioRustlsRuntime;
 
 use libp2p::core::multiaddr::Protocol;
@@ -163,15 +163,8 @@ impl Transport for Socks5Transport {
         let proxy = self.0.clone();
 
         Ok(Box::pin(async move {
-            let sock = match &*proxy {
-                SocksServerAddress::Ip(tcp) => TcpOrUnixStream::Tcp(TcpStream::connect(tcp).await?),
-                #[cfg(unix)]
-                SocksServerAddress::Unix(unix) => {
-                    TcpOrUnixStream::Unix(UnixStream::connect(unix).await?)
-                }
-            };
             Ok(tokio_util::compat::TokioAsyncReadCompatExt::compat(
-                Socks5Stream::connect_with_socket(sock, target)
+                Socks5Stream::connect_with_socket(proxy.connect().await?, target)
                     .await?
                     .into_inner(),
             ))
@@ -205,9 +198,19 @@ pub enum SocksServerAddress {
 }
 
 impl SocksServerAddress {
-    pub fn transport(self) -> Socks5Transport {
+    pub fn transport(self: Arc<Self>) -> Socks5Transport {
         tracing::debug!("Using SOCKS5 proxy at {self:?}");
-        Socks5Transport(Arc::new(self))
+        Socks5Transport(self.clone())
+    }
+
+    async fn connect(&self) -> std::io::Result<TcpOrUnixStream> {
+        match self {
+            SocksServerAddress::Ip(tcp) => TcpStream::connect(tcp).await.map(TcpOrUnixStream::Tcp),
+            #[cfg(unix)]
+            SocksServerAddress::Unix(unix) => {
+                UnixStream::connect(unix).await.map(TcpOrUnixStream::Unix)
+            }
+        }
     }
 
     /// Consult `$TOR_SOCKS_{IPC_PATH,HOST+PORT}`
@@ -230,7 +233,7 @@ impl SocksServerAddress {
     }
 }
 
-pub fn existing_tor_config() -> Option<SocksServerAddress> {
+fn existing_tor_config() -> Option<SocksServerAddress> {
     if is_whonix() {
         Some(
             SocksServerAddress::from_tor_environment()
@@ -242,13 +245,57 @@ pub fn existing_tor_config() -> Option<SocksServerAddress> {
     }
 }
 
+#[derive(Clone)]
+pub enum TorBackend {
+    Arti(Arc<TorClient<TokioRustlsRuntime>>),
+    Socks(Arc<SocksServerAddress>),
+    None,
+}
+
+/// Creates an unbootstrapped Tor client or connects to well-known Tor daemon, depending on configuration.
+///
+/// 1. if on a system which masquerades all traffic via Tor *and* we know how to talk to the Tor daemon (whonix), prepare to proxy through it directly
+/// 2. if on a system which masquerades all traffic via Tor, return `None` to avoid tor-over-tor
+/// 3. if the caller requests/user enables `tor`: prepare an Arti client
+/// 4. `None`
+pub async fn create_tor_client(data_dir: &Path, tor: bool) -> Result<TorBackend, Error> {
+    Ok(if let Some(existing_tor_config) = existing_tor_config() {
+        TorBackend::Socks(Arc::new(existing_tor_config))
+    } else if !may_init_tor() {
+        TorBackend::None
+    } else if tor {
+        TorBackend::Arti(Arc::new(create_arti_tor_client(data_dir).await?))
+    } else {
+        TorBackend::None
+    })
+}
+
+impl TorBackend {
+    pub async fn bootstrap(&self, tauri_handle: Option<TauriHandle>) -> anyhow::Result<()> {
+        match self {
+            TorBackend::Arti(arti) => bootstrap_arti_tor_client(arti, tauri_handle).await?,
+            TorBackend::Socks(addr) => {
+                addr.connect().await?; // validate the remote is actually listening
+            }
+            TorBackend::None => {}
+        }
+        Ok(())
+    }
+
+    /// Obey `enable_monero_tor` if it's meaningful on the current system.
+    pub fn clone_for_monero_rpc(&self, enable_monero_tor: bool) -> TorBackend {
+        match self {
+            TorBackend::Arti(..) if enable_monero_tor => self.clone(),
+            TorBackend::Arti(..) => TorBackend::None,
+            TorBackend::Socks(..) | TorBackend::None => self.clone(),
+        }
+    }
+}
+
 const TOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TOR_RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Creates an unbootstrapped Tor client
-pub async fn create_tor_client(
-    data_dir: &Path,
-) -> Result<Arc<TorClient<TokioRustlsRuntime>>, Error> {
+async fn create_arti_tor_client(data_dir: &Path) -> Result<TorClient<TokioRustlsRuntime>, Error> {
     // We store the Tor state in the data directory
     let data_dir = data_dir.join("tor");
     let state_dir = data_dir.join("state");
@@ -279,12 +326,12 @@ pub async fn create_tor_client(
         .create_unbootstrapped_async()
         .await?;
 
-    Ok(Arc::new(tor_client))
+    Ok(tor_client)
 }
 
 /// Bootstraps an existing Tor client
-pub async fn bootstrap_tor_client(
-    tor_client: Arc<TorClient<TokioRustlsRuntime>>,
+async fn bootstrap_arti_tor_client(
+    tor_client: &TorClient<TokioRustlsRuntime>,
     tauri_handle: Option<TauriHandle>,
 ) -> Result<(), Error> {
     let mut bootstrap_events = tor_client.bootstrap_events();

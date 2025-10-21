@@ -27,7 +27,7 @@ mod command;
 use command::{parse_args, Arguments, Command};
 use swap::asb::rpc::RpcServer;
 use swap::asb::{cancel, punish, redeem, refund, safely_abort, EventLoop, Finality, KrakenRate};
-use swap::common::tor::{bootstrap_tor_client, create_tor_client};
+use swap::common::tor::create_tor_client;
 use swap::common::tracing_util::Format;
 use swap::common::{self, get_logs, warn_if_outdated};
 use swap::database::{open_db, AccessMode};
@@ -40,7 +40,6 @@ use swap::{bitcoin, monero};
 use swap_env::config::{
     initial_setup, query_user_for_initial_config, read_config, Config, ConfigNotInitialized,
 };
-use swap_env::env::may_init_tor;
 use swap_feed;
 use swap_machine::alice::is_complete;
 use tracing_subscriber::filter::LevelFilter;
@@ -225,13 +224,8 @@ pub async fn main() -> Result<()> {
             let namespace = XmrBtcNamespace::from_is_testnet(testnet);
 
             // Initialize and bootstrap Tor client
-            let tor_client = if may_init_tor() {
-                let tor_client = create_tor_client(&config.data.dir).await?;
-                bootstrap_tor_client(tor_client.clone(), None).await?;
-                Some(tor_client)
-            } else {
-                None
-            };
+            let tor_client = create_tor_client(&config.data.dir, true).await?;
+            tor_client.bootstrap(None).await?;
 
             let (mut swarm, onion_addresses) = swarm::asb(
                 &seed,

@@ -7,6 +7,7 @@ use crate::cli::api::tauri_bindings::{
 use crate::cli::api::Context;
 use crate::cli::list_sellers::{list_sellers_init, QuoteWithAddress, UnreachableSeller};
 use crate::cli::{list_sellers as list_sellers_impl, EventLoop, SellerStatus};
+use crate::common::tor::TorBackend;
 use crate::common::{get_logs, redact};
 use crate::libp2p_ext::MultiAddrExt;
 use crate::monero::wallet_rpc::MoneroDaemon;
@@ -21,7 +22,6 @@ use ::bitcoin::address::NetworkUnchecked;
 use ::bitcoin::Txid;
 use ::monero::Network;
 use anyhow::{bail, Context as AnyContext, Result};
-use arti_client::TorClient;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use libp2p::core::Multiaddr;
@@ -40,7 +40,6 @@ use swap_core::bitcoin;
 use swap_core::bitcoin::{CancelTimelock, ExpiredTimelocks, PunishTimelock};
 use thiserror::Error;
 use tokio_util::task::AbortOnDropHandle;
-use tor_rtcompat::tokio::TokioRustlsRuntime;
 use tracing::debug_span;
 use tracing::error;
 use tracing::Instrument;
@@ -1529,7 +1528,7 @@ pub async fn fetch_quotes_task(
     sellers: Vec<Multiaddr>,
     identity: identity::Keypair,
     db: Option<Arc<dyn Database + Send + Sync>>,
-    tor_client: Option<Arc<TorClient<TokioRustlsRuntime>>>,
+    tor_client: TorBackend,
     tauri_handle: Option<TauriHandle>,
 ) -> Result<(
     tokio::task::JoinHandle<()>,

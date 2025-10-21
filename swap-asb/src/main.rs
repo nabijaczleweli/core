@@ -27,7 +27,7 @@ mod command;
 use command::{parse_args, Arguments, Command};
 use swap::asb::rpc::RpcServer;
 use swap::asb::{cancel, punish, redeem, refund, safely_abort, EventLoop, Finality, KrakenRate};
-use swap::common::tor::create_tor_client;
+use swap::common::tor::{create_tor_client, TorBackendSwap};
 use swap::common::tracing_util::Format;
 use swap::common::{self, get_logs, warn_if_outdated};
 use swap::database::{open_db, AccessMode};

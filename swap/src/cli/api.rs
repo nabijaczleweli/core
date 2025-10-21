@@ -3,7 +3,7 @@ pub mod tauri_bindings;
 
 use crate::cli::api::tauri_bindings::{ContextStatus, SeedChoice};
 use crate::cli::command::{Bitcoin, Monero};
-use crate::common::tor::{create_tor_client, TorBackend};
+use crate::common::tor::{create_tor_client, TorBackend, TorBackendSwap};
 use crate::common::tracing_util::Format;
 use crate::database::{open_db, AccessMode};
 use crate::network::rendezvous::XmrBtcNamespace;

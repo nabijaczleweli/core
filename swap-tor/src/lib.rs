@@ -270,7 +270,7 @@ impl SocksServerAddress {
     }
 }
 
-type TcpTransport = libp2p::dns::tokio::Transport<libp2p::tcp::tokio::Transport>;
+pub type TcpTransport = libp2p::dns::tokio::Transport<libp2p::tcp::tokio::Transport>;
 pub struct TorsocksTransport(pub TcpTransport);
 impl Transport for TorsocksTransport {
     type Output = <TcpTransport as Transport>::Output;

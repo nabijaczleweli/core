@@ -3,9 +3,8 @@ use crate::network::transport::authenticate_and_multiplex;
 use anyhow::Result;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
-use libp2p::dns;
-use libp2p::tcp;
-use libp2p::{identity, PeerId, Transport};
+use libp2p::Transport;
+use libp2p::{identity, PeerId};
 use libp2p_tor::AddressConversion;
 
 /// Creates the libp2p transport for the swap CLI.
@@ -20,13 +19,7 @@ pub fn new(
     identity: &identity::Keypair,
     maybe_tor_client: TorBackend,
 ) -> Result<Boxed<(PeerId, StreamMuxerBox)>> {
-    let tcp = tcp::tokio::Transport::new(tcp::Config::new().nodelay(true));
-    let tcp_with_dns = dns::tokio::Transport::system(tcp)?;
+    let transport = maybe_tor_client.into_transport(AddressConversion::IpAndDns, |_| {})?;
 
-    let maybe_tor_transport =
-        maybe_tor_client.into_transport(AddressConversion::IpAndDns, |_| {})?;
-
-    let transport = maybe_tor_transport.or_transport(tcp_with_dns).boxed();
-
-    authenticate_and_multiplex(transport, identity)
+    authenticate_and_multiplex(transport.boxed(), identity)
 }

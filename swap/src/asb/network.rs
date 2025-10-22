@@ -18,7 +18,7 @@ use swap_feed::LatestRate;
 
 pub mod transport {
     use arti_client::config::onion_service::OnionServiceConfigBuilder;
-    use libp2p::{dns, identity, tcp, Transport};
+    use libp2p::{identity, Transport};
     use libp2p_tor::AddressConversion;
 
     use super::*;
@@ -45,7 +45,7 @@ pub mod transport {
         num_intro_points: u8,
     ) -> Result<OnionTransportWithAddresses> {
         let mut onion_addresses = vec![];
-        let maybe_tor_transport =
+        let transport =
             maybe_tor_client.into_transport(AddressConversion::DnsOnly, |arti_tor_transport| {
                 if register_hidden_service {
                     let onion_service_config = OnionServiceConfigBuilder::default()
@@ -75,14 +75,8 @@ pub mod transport {
                 }
             })?;
 
-        let tcp = tcp::tokio::Transport::new(tcp::Config::new().nodelay(true));
-        let tcp_with_dns = dns::tokio::Transport::system(tcp)?;
-
         Ok((
-            authenticate_and_multiplex(
-                maybe_tor_transport.or_transport(tcp_with_dns).boxed(),
-                identity,
-            )?,
+            authenticate_and_multiplex(transport.boxed(), identity)?,
             onion_addresses,
         ))
     }

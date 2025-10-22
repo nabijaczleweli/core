@@ -6,6 +6,7 @@ use crate::cli::api::tauri_bindings::{
 use arti_client::{config::TorClientConfigBuilder, status::BootstrapStatus, Error, TorClient};
 use futures::StreamExt;
 use libp2p::core::transport::{OptionalTransport, OrTransport};
+use libp2p::{dns, tcp, Transport};
 use libp2p_tor::{AddressConversion, TorTransport};
 use swap_env::env::{is_whonix, may_init_tor};
 use swap_tor::*;
@@ -54,8 +55,11 @@ pub trait TorBackendSwap {
     ) -> std::io::Result<IntoTransportT>;
 }
 type IntoTransportT = OrTransport<
-    OptionalTransport<TorTransport>,
-    OrTransport<OptionalTransport<Socks5Transport>, OptionalTransport<TorsocksTransport>>,
+    OrTransport<
+        OptionalTransport<TorTransport>,
+        OrTransport<OptionalTransport<Socks5Transport>, OptionalTransport<TorsocksTransport>>,
+    >,
+    swap_tor::TcpTransport,
 >;
 impl TorBackendSwap for TorBackend {
     async fn bootstrap(&self, tauri_handle: Option<TauriHandle>) -> anyhow::Result<()> {
@@ -83,7 +87,13 @@ impl TorBackendSwap for TorBackend {
         arti_address_conversion: AddressConversion,
         arti_transport_hook: impl FnOnce(&mut TorTransport),
     ) -> std::io::Result<IntoTransportT> {
-        Ok(match self {
+        fn plain_transport() -> std::io::Result<swap_tor::TcpTransport> {
+            let tcp = tcp::tokio::Transport::new(tcp::Config::new().nodelay(true));
+            dns::tokio::Transport::system(tcp)
+        }
+        let tcp_with_dns = plain_transport()?;
+
+        let tor = match self {
             TorBackend::Arti(tor_client) => {
                 let mut tor_transport =
                     libp2p_tor::TorTransport::from_client(tor_client, arti_address_conversion);
@@ -104,18 +114,16 @@ impl TorBackendSwap for TorBackend {
                 OptionalTransport::none(),
                 OrTransport::new(
                     OptionalTransport::none(),
-                    OptionalTransport::some(TorsocksTransport(
-                        libp2p::dns::tokio::Transport::system(libp2p::tcp::tokio::Transport::new(
-                            libp2p::tcp::Config::new().nodelay(true),
-                        ))?,
-                    )),
+                    OptionalTransport::some(TorsocksTransport(plain_transport()?)),
                 ),
             ),
             TorBackend::None => OrTransport::new(
                 OptionalTransport::none(),
                 OrTransport::new(OptionalTransport::none(), OptionalTransport::none()),
             ),
-        })
+        };
+
+        Ok(tor.or_transport(tcp_with_dns))
     }
 }
 

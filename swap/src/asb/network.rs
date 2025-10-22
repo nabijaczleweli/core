@@ -73,7 +73,7 @@ pub mod transport {
                         }
                     }
                 }
-            });
+            })?;
 
         let tcp = maybe_tor_transport
             .or_transport(tcp::tokio::Transport::new(tcp::Config::new().nodelay(true)));

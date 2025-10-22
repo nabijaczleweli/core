@@ -304,8 +304,8 @@ export async function checkContextStatus(): Promise<ContextStatus> {
   return await invokeNoArgs<ContextStatus>("get_context_status");
 }
 
-export async function getTorForced(): Promise<boolean> {
-  const forced = await invokeNoArgs<boolean>("get_tor_forced");
+export async function getTorForcedExcuse(): Promise<string> {
+  const forced = await invokeNoArgs<string>("get_tor_forced_excuse");
   return forced;
 }
 

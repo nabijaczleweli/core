@@ -23,7 +23,8 @@ pub fn new(
     let tcp = tcp::tokio::Transport::new(tcp::Config::new().nodelay(true));
     let tcp_with_dns = dns::tokio::Transport::system(tcp)?;
 
-    let maybe_tor_transport = maybe_tor_client.into_transport(AddressConversion::IpAndDns, |_| {});
+    let maybe_tor_transport =
+        maybe_tor_client.into_transport(AddressConversion::IpAndDns, |_| {})?;
 
     let transport = maybe_tor_transport.or_transport(tcp_with_dns).boxed();
 

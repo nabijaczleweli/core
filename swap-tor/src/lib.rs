@@ -81,6 +81,11 @@ impl AsyncWrite for TcpOrUnixStream {
     }
 }
 
+fn onion3_to_dotonion(service: &[u8; 35]) -> String {
+    let mut domain = data_encoding::BASE32.encode(service).to_lowercase();
+    domain.push_str(".onion");
+    domain
+}
 fn multi_to_socks(addr: &Multiaddr) -> Option<TargetAddr<'static>> {
     let mut addr = addr.iter();
     match (addr.next()?, addr.next()) {
@@ -88,11 +93,10 @@ fn multi_to_socks(addr: &Multiaddr) -> Option<TargetAddr<'static>> {
             Protocol::Dns(domain) | Protocol::Dns4(domain) | Protocol::Dns6(domain),
             Some(Protocol::Tcp(port)),
         ) => Some(TargetAddr::Domain(domain.into_owned().into(), port)),
-        (Protocol::Onion3(service), _) => {
-            let mut domain = data_encoding::BASE32.encode(service.hash()).to_lowercase();
-            domain.push_str(".onion");
-            Some(TargetAddr::Domain(domain.into(), service.port()))
-        }
+        (Protocol::Onion3(service), _) => Some(TargetAddr::Domain(
+            onion3_to_dotonion(service.hash()).into(),
+            service.port(),
+        )),
         (Protocol::Ip4(ip), Some(Protocol::Tcp(port))) => {
             Some(TargetAddr::Ip(SocketAddr::from((ip, port))))
         }
@@ -102,23 +106,35 @@ fn multi_to_socks(addr: &Multiaddr) -> Option<TargetAddr<'static>> {
         _ => None,
     }
 }
+fn multi_to_torsocksmulti(addr: Multiaddr) -> Result<Multiaddr, Multiaddr> {
+    let Some(Protocol::Onion3(service)) = addr.iter().next() else {
+        return Err(addr);
+    };
+
+    let mut new_addr = Multiaddr::with_capacity(addr.len() + 1);
+    new_addr.push(Protocol::Dns(onion3_to_dotonion(service.hash()).into()));
+    new_addr.push(Protocol::Tcp(service.port()));
+    addr.iter().skip(1).for_each(|p| new_addr.push(p));
+    Ok(new_addr)
+}
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     use tokio_socks::TargetAddr;
 
+    const MULTIS: [&str; 6] = [
+        "/dns/ip.tld/tcp/10",
+        "/dns4/dns.ip4.tld/tcp/11",
+        "/dns6/dns.ip6.tld/tcp/12",
+        "/onion3/cebulka7uxchnbpvmqapg5pfos4ngaxglsktzvha7a5rigndghvadeyd:13",
+        "/ip4/127.0.0.1/tcp/10",
+        "/ip6/::1/tcp/10",
+    ];
+
     #[test]
     fn multi_to_socks() {
         assert_eq!(
-            [
-                "/dns/ip.tld/tcp/10",
-                "/dns4/dns.ip4.tld/tcp/11",
-                "/dns6/dns.ip6.tld/tcp/12",
-                "/onion3/cebulka7uxchnbpvmqapg5pfos4ngaxglsktzvha7a5rigndghvadeyd:13",
-                "/ip4/127.0.0.1/tcp/10",
-                "/ip6/::1/tcp/10",
-            ]
-            .map(|ma| super::multi_to_socks(&ma.parse().unwrap()).unwrap()),
+            MULTIS.map(|ma| super::multi_to_socks(&ma.parse().unwrap()).unwrap()),
             [
                 TargetAddr::Domain("ip.tld".into(), 10),
                 TargetAddr::Domain("dns.ip4.tld".into(), 11),
@@ -129,6 +145,25 @@ mod tests {
                 ),
                 TargetAddr::Ip(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 10)),
                 TargetAddr::Ip(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 10)),
+            ],
+        );
+    }
+
+    #[test]
+    fn multi_to_torsocksmulti() {
+        assert_eq!(
+            MULTIS.map(|ma| super::multi_to_torsocksmulti(ma.parse().unwrap()).ok()),
+            [
+                None,
+                None,
+                None,
+                Some(
+                    "/dns/cebulka7uxchnbpvmqapg5pfos4ngaxglsktzvha7a5rigndghvadeyd.onion/tcp/13"
+                        .parse()
+                        .unwrap()
+                ),
+                None,
+                None,
             ],
         );
     }
@@ -235,10 +270,59 @@ impl SocksServerAddress {
     }
 }
 
+type TcpTransport = libp2p::dns::tokio::Transport<libp2p::tcp::tokio::Transport>;
+pub struct TorsocksTransport(pub TcpTransport);
+impl Transport for TorsocksTransport {
+    type Output = <TcpTransport as Transport>::Output;
+    type Error = <TcpTransport as Transport>::Error;
+    type ListenerUpgrade = std::future::Pending<Result<Self::Output, Self::Error>>;
+    type Dial = <TcpTransport as Transport>::Dial;
+
+    fn listen_on(
+        &mut self,
+        _: ListenerId,
+        addr: Multiaddr,
+    ) -> Result<(), TransportError<Self::Error>> {
+        Err(TransportError::MultiaddrNotSupported(addr))
+    }
+
+    fn remove_listener(&mut self, _: ListenerId) -> bool {
+        false
+    }
+
+    fn dial(&mut self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
+        let addr = multi_to_torsocksmulti(addr).map_err(TransportError::MultiaddrNotSupported)?;
+        self.0.dial(addr)
+    }
+
+    fn dial_as_listener(
+        &mut self,
+        addr: Multiaddr,
+    ) -> Result<Self::Dial, TransportError<Self::Error>> {
+        self.dial(addr)
+    }
+
+    fn poll(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<TransportEvent<Self::ListenerUpgrade, Self::Error>> {
+        Poll::Pending
+    }
+
+    fn address_translation(&self, a: &Multiaddr, b: &Multiaddr) -> Option<Multiaddr> {
+        self.0.address_translation(a, b)
+    }
+}
+
 #[derive(Clone)]
 pub enum TorBackend {
+    /// Private Tor client
     Arti(Arc<TorClient<TokioRustlsRuntime>>),
+    /// Talking through a Tor SOCKS5 proxy
     Socks(Arc<SocksServerAddress>),
+    /// In an environment where standard TCP calls go over Tor and TCP can resolve .onion addresses
+    Torsocks,
+    /// No Tor at all
     None,
 }
 
@@ -247,6 +331,7 @@ impl std::fmt::Debug for TorBackend {
         f.write_str(match self {
             TorBackend::Arti(..) => "Arti",
             TorBackend::Socks(..) => "Socks",
+            TorBackend::Torsocks => "Torsocks",
             TorBackend::None => "None",
         })
     }

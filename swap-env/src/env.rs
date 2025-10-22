@@ -141,12 +141,26 @@ pub fn is_whonix() -> bool {
     fs::exists("/usr/share/whonix/marker").unwrap_or(false)
 }
 
-pub fn may_init_tor() -> bool {
-    let is_whonix = is_whonix();
-    if is_whonix {
+fn is_tails() -> bool {
+    fs::read_to_string("/etc/os-release")
+        .unwrap_or(String::new())
+        .contains(r#"ID="tails""#)
+}
+
+pub fn forced_tor_excuse() -> Option<&'static str> {
+    if is_whonix() {
         tracing::info!("On whonix, not starting Tor");
+        Some("Under whonix, the app always uses the global Tor connection.")
+    } else if is_tails() {
+        tracing::info!("On Tails, not starting Tor");
+        Some("Under Tails, the app always uses the global Tor connection.")
+    } else {
+        None
     }
-    !is_whonix
+}
+
+pub fn may_init_tor() -> bool {
+    forced_tor_excuse().is_none()
 }
 
 #[cfg(test)]

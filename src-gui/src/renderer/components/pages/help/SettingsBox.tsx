@@ -66,7 +66,7 @@ import { getNetwork } from "store/config";
 import { currencySymbol } from "utils/formatUtils";
 import InfoBox from "renderer/components/pages/swap/swap/components/InfoBox";
 import { isValidMultiAddressWithPeerId } from "utils/parseUtils";
-import { getNodeStatus, getTorForced } from "renderer/rpc";
+import { getNodeStatus, getTorForcedExcuse } from "renderer/rpc";
 import { setStatus } from "store/features/nodesSlice";
 import MoneroAddressTextField from "renderer/components/inputs/MoneroAddressTextField";
 import BitcoinAddressTextField from "renderer/components/inputs/BitcoinAddressTextField";
@@ -704,7 +704,7 @@ function NodeTable({
   );
 }
 
-const torForced = await getTorForced();
+const torForced = await getTorForcedExcuse();
 export function TorSettings() {
   const dispatch = useAppDispatch();
   const torEnabled = useSettings((settings) => settings.enableTor);
@@ -717,10 +717,8 @@ export function TorSettings() {
         <SettingLabel
           label="Use Tor"
           tooltip={
-            "Route network traffic through Tor to hide your IP address from the maker." +
-            (torForced
-              ? " Under whonix, the app always uses the global Tor connection."
-              : "")
+            "Route network traffic through Tor to hide your IP address from the maker. " +
+            torForced
           }
         />
       </TableCell>

@@ -28,14 +28,14 @@ fn existing_tor_config() -> Option<SocksServerAddress> {
 /// Creates an unbootstrapped Tor client or connects to well-known Tor daemon, depending on configuration.
 ///
 /// 1. if on a system which masquerades all traffic via Tor *and* we know how to talk to the Tor daemon (whonix), prepare to proxy through it directly
-/// 2. if on a system which masquerades all traffic via Tor, return `None` to avoid tor-over-tor
+/// 2. if on a system which masquerades all traffic via Tor (Tails), return `Torsocks` to use this feature to talk over Tor
 /// 3. if the caller requests/user enables `tor`: prepare an Arti client
 /// 4. `None`
 pub async fn create_tor_client(data_dir: &Path, tor: bool) -> Result<TorBackend, Error> {
     Ok(if let Some(existing_tor_config) = existing_tor_config() {
         TorBackend::Socks(Arc::new(existing_tor_config))
     } else if !may_init_tor() {
-        TorBackend::None
+        TorBackend::Torsocks
     } else if tor {
         TorBackend::Arti(Arc::new(create_arti_tor_client(data_dir).await?))
     } else {
@@ -51,10 +51,12 @@ pub trait TorBackendSwap {
         self,
         arti_address_conversion: AddressConversion,
         arti_transport_hook: impl FnOnce(&mut TorTransport),
-    ) -> IntoTransportT;
+    ) -> std::io::Result<IntoTransportT>;
 }
-type IntoTransportT =
-    OrTransport<OptionalTransport<TorTransport>, OptionalTransport<Socks5Transport>>;
+type IntoTransportT = OrTransport<
+    OptionalTransport<TorTransport>,
+    OrTransport<OptionalTransport<Socks5Transport>, OptionalTransport<TorsocksTransport>>,
+>;
 impl TorBackendSwap for TorBackend {
     async fn bootstrap(&self, tauri_handle: Option<TauriHandle>) -> anyhow::Result<()> {
         match self {
@@ -62,7 +64,7 @@ impl TorBackendSwap for TorBackend {
             TorBackend::Socks(addr) => {
                 addr.connect().await?; // validate the remote is actually listening
             }
-            TorBackend::None => {}
+            TorBackend::Torsocks | TorBackend::None => {}
         }
         Ok(())
     }
@@ -72,7 +74,7 @@ impl TorBackendSwap for TorBackend {
         match self {
             TorBackend::Arti(..) if enable_monero_tor => self.clone(),
             TorBackend::Arti(..) => TorBackend::None,
-            TorBackend::Socks(..) | TorBackend::None => self.clone(),
+            TorBackend::Socks(..) | TorBackend::Torsocks | TorBackend::None => self.clone(),
         }
     }
 
@@ -80,25 +82,40 @@ impl TorBackendSwap for TorBackend {
         self,
         arti_address_conversion: AddressConversion,
         arti_transport_hook: impl FnOnce(&mut TorTransport),
-    ) -> IntoTransportT {
-        match self {
+    ) -> std::io::Result<IntoTransportT> {
+        Ok(match self {
             TorBackend::Arti(tor_client) => {
                 let mut tor_transport =
                     libp2p_tor::TorTransport::from_client(tor_client, arti_address_conversion);
                 arti_transport_hook(&mut tor_transport);
                 OrTransport::new(
                     OptionalTransport::some(tor_transport),
-                    OptionalTransport::none(),
+                    OrTransport::new(OptionalTransport::none(), OptionalTransport::none()),
                 )
             }
             TorBackend::Socks(universal_config) => OrTransport::new(
                 OptionalTransport::none(),
-                OptionalTransport::some(universal_config.transport()),
+                OrTransport::new(
+                    OptionalTransport::some(universal_config.transport()),
+                    OptionalTransport::none(),
+                ),
             ),
-            TorBackend::None => {
-                OrTransport::new(OptionalTransport::none(), OptionalTransport::none())
-            }
-        }
+            TorBackend::Torsocks => OrTransport::new(
+                OptionalTransport::none(),
+                OrTransport::new(
+                    OptionalTransport::none(),
+                    OptionalTransport::some(TorsocksTransport(
+                        libp2p::dns::tokio::Transport::system(libp2p::tcp::tokio::Transport::new(
+                            libp2p::tcp::Config::new().nodelay(true),
+                        ))?,
+                    )),
+                ),
+            ),
+            TorBackend::None => OrTransport::new(
+                OptionalTransport::none(),
+                OrTransport::new(OptionalTransport::none(), OptionalTransport::none()),
+            ),
+        })
     }
 }
 

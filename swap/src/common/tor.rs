@@ -8,21 +8,15 @@ use futures::StreamExt;
 use libp2p::core::transport::{OptionalTransport, OrTransport};
 use libp2p::{dns, tcp, Transport};
 use libp2p_tor::{AddressConversion, TorTransport};
-use swap_env::env::{is_tails, is_whonix, may_init_tor};
+use swap_env::env::{is_tails, may_init_tor};
 use swap_tor::*;
 use tor_rtcompat::tokio::TokioRustlsRuntime;
 
 pub type TorBackend = swap_tor::TorBackend;
 
 fn existing_tor_config() -> Option<SocksServerAddress> {
-    if is_whonix() {
-        Some(
-            SocksServerAddress::from_tor_environment()
-                .expect("whonix always has valid $TOR_... variables")
-                .expect("whonix always has $TOR_... set"),
-        )
-    } else if is_tails() {
-        Some(SocksServerAddress::Ip(
+    if is_tails() {
+        Some(SocksServerAddress(
             (std::net::Ipv4Addr::LOCALHOST, 9050).into(),
         ))
     } else {
@@ -32,13 +26,13 @@ fn existing_tor_config() -> Option<SocksServerAddress> {
 
 /// Creates an unbootstrapped Tor client or connects to well-known Tor daemon, depending on configuration.
 ///
-/// 1. if on a system which masquerades all traffic via Tor *and* we know how to talk to the Tor daemon (whonix), prepare to proxy through it directly
-/// 2. if on a system which masquerades all traffic via Tor (Tails), return `Torsocks` to use this feature to talk over Tor
+/// 1. if we know how to talk to the Tor daemon (Tails), prepare to proxy through it directly
+/// 2. if on a system which masquerades all traffic via Tor (whonix), return `Torsocks` to use this feature to talk over Tor
 /// 3. if the caller requests/user enables `tor`: prepare an Arti client
 /// 4. `None`
 pub async fn create_tor_client(data_dir: &Path, tor: bool) -> Result<TorBackend, Error> {
     Ok(if let Some(existing_tor_config) = existing_tor_config() {
-        TorBackend::Socks(Arc::new(existing_tor_config))
+        TorBackend::Socks(existing_tor_config)
     } else if !may_init_tor() {
         TorBackend::Torsocks
     } else if tor {

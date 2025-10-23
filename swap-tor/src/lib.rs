@@ -8,78 +8,11 @@ use libp2p::core::transport::{ListenerId, TransportEvent};
 use libp2p::{Multiaddr, Transport, TransportError};
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
 use tokio_socks::tcp::Socks5Stream;
 use tokio_socks::TargetAddr;
-
-pub enum TcpOrUnixStream {
-    Tcp(TcpStream),
-    #[cfg(unix)]
-    Unix(UnixStream),
-}
-impl AsyncRead for TcpOrUnixStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            TcpOrUnixStream::Tcp(tsock) => AsyncRead::poll_read(Pin::new(tsock), cx, buf),
-            TcpOrUnixStream::Unix(sock) => AsyncRead::poll_read(Pin::new(sock), cx, buf),
-        }
-    }
-}
-impl AsyncWrite for TcpOrUnixStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            TcpOrUnixStream::Tcp(tsock) => AsyncWrite::poll_write(Pin::new(tsock), cx, buf),
-            TcpOrUnixStream::Unix(sock) => AsyncWrite::poll_write(Pin::new(sock), cx, buf),
-        }
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            TcpOrUnixStream::Tcp(tsock) => {
-                AsyncWrite::poll_write_vectored(Pin::new(tsock), cx, bufs)
-            }
-            TcpOrUnixStream::Unix(sock) => {
-                AsyncWrite::poll_write_vectored(Pin::new(sock), cx, bufs)
-            }
-        }
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        true
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            TcpOrUnixStream::Tcp(tsock) => AsyncWrite::poll_flush(Pin::new(tsock), cx),
-            TcpOrUnixStream::Unix(sock) => AsyncWrite::poll_flush(Pin::new(sock), cx),
-        }
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            TcpOrUnixStream::Tcp(tsock) => AsyncWrite::poll_shutdown(Pin::new(tsock), cx),
-            TcpOrUnixStream::Unix(sock) => AsyncWrite::poll_shutdown(Pin::new(sock), cx),
-        }
-    }
-}
 
 fn onion3_to_dotonion(service: &[u8; 35]) -> String {
     let mut domain = data_encoding::BASE32.encode(service).to_lowercase();
@@ -169,9 +102,9 @@ mod tests {
     }
 }
 
-pub struct Socks5Transport(Arc<SocksServerAddress>);
+pub struct Socks5Transport(SocksServerAddress);
 impl Transport for Socks5Transport {
-    type Output = tokio_util::compat::Compat<TcpOrUnixStream>;
+    type Output = tokio_util::compat::Compat<TcpStream>;
     type Error = tokio_socks::Error;
     type ListenerUpgrade = std::future::Pending<Result<Self::Output, Self::Error>>;
     type Dial = Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send + 'static>>;
@@ -190,7 +123,7 @@ impl Transport for Socks5Transport {
 
     fn dial(&mut self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
         let target = multi_to_socks(&addr).ok_or(TransportError::MultiaddrNotSupported(addr))?;
-        let proxy = self.0.clone();
+        let proxy = self.0;
 
         Ok(Box::pin(async move {
             Ok(tokio_util::compat::TokioAsyncReadCompatExt::compat(
@@ -218,55 +151,23 @@ impl Transport for Socks5Transport {
     }
 }
 
-#[derive(Debug)]
-pub enum SocksServerAddress {
-    Ip(SocketAddr),
-    #[cfg(unix)]
-    Unix(PathBuf),
-}
+#[derive(Debug, Copy, Clone)]
+pub struct SocksServerAddress(pub SocketAddr);
 
 impl SocksServerAddress {
-    pub fn transport(self: Arc<Self>) -> Socks5Transport {
+    pub fn transport(self) -> Socks5Transport {
         tracing::debug!("Using SOCKS5 proxy at {self:?}");
-        Socks5Transport(self.clone())
+        Socks5Transport(self)
     }
 
-    pub async fn connect(&self) -> std::io::Result<TcpOrUnixStream> {
-        match self {
-            SocksServerAddress::Ip(tcp) => TcpStream::connect(tcp).await.map(TcpOrUnixStream::Tcp),
-            #[cfg(unix)]
-            SocksServerAddress::Unix(unix) => {
-                UnixStream::connect(unix).await.map(TcpOrUnixStream::Unix)
-            }
-        }
+    pub async fn connect(&self) -> std::io::Result<TcpStream> {
+        TcpStream::connect(self.0).await
     }
 
-    pub async fn proxy(
-        &self,
-        target: TargetAddr<'_>,
-    ) -> Result<TcpOrUnixStream, tokio_socks::Error> {
+    pub async fn proxy(&self, target: TargetAddr<'_>) -> Result<TcpStream, tokio_socks::Error> {
         Socks5Stream::connect_with_socket(self.connect().await?, target)
             .await
             .map(Socks5Stream::into_inner)
-    }
-
-    /// Consult `$TOR_SOCKS_{IPC_PATH,HOST+PORT}`
-    ///
-    /// `$TOR_SOCKS_IPC_PATH` is ignored if `cfg(not(unix))`, and takes precedence if `cfg(unix)`.
-    pub fn from_tor_environment() -> anyhow::Result<Option<Self>> {
-        #[cfg(unix)]
-        if let Some(p) = std::env::var_os("TOR_SOCKS_IPC_PATH") {
-            return Ok(Some(SocksServerAddress::Unix(p.into())));
-        }
-
-        use std::env::var;
-        match (var("TOR_SOCKS_HOST"), var("TOR_SOCKS_PORT")) {
-            (Ok(h), Ok(p)) => Ok(Some(SocksServerAddress::Ip(SocketAddr::new(
-                h.parse()?,
-                p.parse()?,
-            )))),
-            _ => Ok(None),
-        }
     }
 }
 
@@ -319,7 +220,7 @@ pub enum TorBackend {
     /// Private Tor client
     Arti(Arc<TorClient<TokioRustlsRuntime>>),
     /// Talking through a Tor SOCKS5 proxy
-    Socks(Arc<SocksServerAddress>),
+    Socks(SocksServerAddress),
     /// In an environment where standard TCP calls go over Tor and TCP can resolve .onion addresses
     Torsocks,
     /// No Tor at all

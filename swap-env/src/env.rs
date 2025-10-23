@@ -141,7 +141,7 @@ pub fn is_whonix() -> bool {
     fs::exists("/usr/share/whonix/marker").unwrap_or(false)
 }
 
-fn is_tails() -> bool {
+pub fn is_tails() -> bool {
     fs::read_to_string("/etc/os-release")
         .unwrap_or(String::new())
         .contains(r#"ID="tails""#)

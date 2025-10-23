@@ -8,7 +8,7 @@ use futures::StreamExt;
 use libp2p::core::transport::{OptionalTransport, OrTransport};
 use libp2p::{dns, tcp, Transport};
 use libp2p_tor::{AddressConversion, TorTransport};
-use swap_env::env::{is_whonix, may_init_tor};
+use swap_env::env::{is_tails, is_whonix, may_init_tor};
 use swap_tor::*;
 use tor_rtcompat::tokio::TokioRustlsRuntime;
 
@@ -21,6 +21,10 @@ fn existing_tor_config() -> Option<SocksServerAddress> {
                 .expect("whonix always has valid $TOR_... variables")
                 .expect("whonix always has $TOR_... set"),
         )
+    } else if is_tails() {
+        Some(SocksServerAddress::Ip(
+            (std::net::Ipv4Addr::LOCALHOST, 9050).into(),
+        ))
     } else {
         None
     }

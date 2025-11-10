@@ -44,6 +44,7 @@ fn main() {
             monerod: OrchestratorImage::Registry(images::MONEROD_IMAGE.to_string()),
             electrs: OrchestratorImage::Registry(images::ELECTRS_IMAGE.to_string()),
             bitcoind: OrchestratorImage::Registry(images::BITCOIND_IMAGE.to_string()),
+            arti: OrchestratorImage::Registry(images::ARTI_IMAGE.to_string()),
             // TODO: Allow pre-built images here
             asb: OrchestratorImage::Build(images::ASB_IMAGE_FROM_SOURCE.clone()),
             // TODO: Allow pre-built images here
@@ -60,6 +61,7 @@ fn main() {
         directories: OrchestratorDirectories {
             asb_data_dir: PathBuf::from(ASB_DATA_DIR),
         },
+        want_arti: prompt::tor_for_daemons(),
     };
 
     // If the config file already exists and be de-serialized,
